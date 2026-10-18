@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>消失井字棋 · 不敗 AI</title>
+<meta name="description" content="每位玩家最多保留 3 顆棋子，下第 4 顆時最舊的那顆會消失。挑戰以完整遊戲樹搜尋決策的電腦對手。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="消失井字棋 · 不敗 AI">
+<meta property="og:description" content="每位玩家最多保留 3 顆棋子，下第 4 顆時最舊的那顆會消失。挑戰以完整遊戲樹搜尋決策的電腦對手。">
+<meta property="og:url" content="https://wkai2573.github.io/vanishing-tictactoe/">
+<meta property="og:locale" content="zh_TW">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0c16'/%3E%3Cpath d='M16 16l20 20M36 16L16 36' stroke='%2338bdf8' stroke-width='6' stroke-linecap='round'/%3E%3Ccircle cx='42' cy='42' r='10' fill='none' stroke='%23fb923c' stroke-width='6'/%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 0%, #1b2140 0%, #0a0c16 65%);
+    color: #e8ecf5;
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif;
+    padding: 20px;
+  }
+  .app { width: min(720px, 100%); }
+  h1 {
+    font-size: 22px; font-weight: 800; text-align: center;
+    margin: 0 0 8px; letter-spacing: 3px;
+    background: linear-gradient(90deg, #38bdf8, #fb923c);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent;
+  }
+  .sub { text-align: center; font-size: 12.5px; color: #7c86a0; line-height: 1.7; margin: 0 0 14px; }
+  .layout { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  @media (min-width: 620px) { .layout { grid-template-columns: 1fr 200px; } }
+  .main { min-width: 0; }
+  .players { display: flex; justify-content: center; gap: 10px; margin-bottom: 14px; }
+  .chip {
+    font-size: 12.5px; padding: 5px 12px; border-radius: 999px;
+    border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03);
+    color: #9aa4bc;
+  }
+  .chip b { font-weight: 800; }
+  .chip.you b { color: #38bdf8; }
+  .chip.ai  b { color: #fb923c; }
+  .board {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    padding: 12px; background: rgba(255,255,255,.03);
+    border: 1px solid rgba(255,255,255,.07); border-radius: 22px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55);
+  }
+  .board.locked { pointer-events: none; }
+  .cell {
+    position: relative; aspect-ratio: 1; border-radius: 14px;
+    border: 1px solid rgba(255,255,255,.08);
+    background: rgba(255,255,255,.02);
+    display: flex; align-items: center; justify-content: center;
+    padding: 0; font: inherit; color: inherit; cursor: pointer;
+    transition: background .15s, border-color .15s, transform .1s;
+  }
+  .cell:hover:not(.x):not(.o) { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.18); }
+  .cell:active:not(.x):not(.o) { transform: scale(.96); }
+  .cell.x, .cell.o { cursor: default; }
+  .mark { font-size: clamp(34px, 13vw, 54px); font-weight: 800; line-height: 1; }
+  .cell.x .mark { color: #38bdf8; text-shadow: 0 0 24px rgba(56,189,248,.55); }
+  .cell.o .mark { color: #fb923c; text-shadow: 0 0 24px rgba(251,146,60,.55); }
+  .badge { position: absolute; top: 7px; right: 9px; font-size: 11px; font-weight: 700; color: #5d6784; }
+  .cell.oldest {
+    border-color: rgba(250,204,21,.85);
+    background: rgba(250,204,21,.07);
+    animation: pulse 1.3s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,.38); }
+    50%     { box-shadow: 0 0 0 7px rgba(250,204,21,0); }
+  }
+  .cell.winning {
+    border-color: rgba(74,222,128,.95);
+    background: rgba(74,222,128,.12);
+    box-shadow: 0 0 0 3px rgba(74,222,128,.25);
+  }
+  .cell.placing .mark { animation: pop .26s cubic-bezier(.34,1.56,.64,1); }
+  @keyframes pop {
+    from { transform: scale(.25); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
+  .status { text-align: center; margin-top: 16px; min-height: 44px; }
+  .turn { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
+  .turn .x { color: #38bdf8; }
+  .turn .o { color: #fb923c; }
+  .turn .dots::after { content: ''; animation: dots 1.2s steps(4, end) infinite; }
+  @keyframes dots {
+    0% { content: ''; } 25% { content: '.'; }
+    50% { content: '..'; } 75% { content: '...'; }
+  }
+  .hint { font-size: 12.5px; color: #7c86a0; margin-top: 6px; min-height: 17px; }
+  .footer {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 14px; font-size: 13px; color: #7c86a0;
+  }
+  #reset {
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+    color: #cfd6e6; padding: 8px 16px; border-radius: 10px;
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  #reset:hover { background: rgba(255,255,255,.13); }
+  .log-panel {
+    background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.07);
+    border-radius: 16px; padding: 10px 12px;
+    display: flex; flex-direction: column; max-height: 460px;
+  }
+  .log-title {
+    font-size: 12px; font-weight: 800; letter-spacing: 2px;
+    color: #8892aa; margin-bottom: 8px;
+    display: flex; justify-content: space-between;
+  }
+  .log-title span { color: #5d6784; font-weight: 500; letter-spacing: 0; }
+  .log-body {
+    overflow-y: auto; flex: 1;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.75;
+  }
+  .log-body::-webkit-scrollbar { width: 6px; }
+  .log-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
+  .log-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; }
+  .log-num { color: #4d5773; min-width: 24px; }
+  .log-player { font-weight: 800; min-width: 14px; }
+  .log-player.x { color: #38bdf8; }
+  .log-player.o { color: #fb923c; }
+  .log-arrow { color: #4d5773; }
+  .log-pos { color: #c8d0e0; }
+  .log-empty { color: #4d5773; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>消失井字棋</h1>
+  <p class="sub">
+    每個玩家最多保留 3 顆自己的棋子<br>
+    下第 4 顆時，自己最舊的那顆會消失
+  </p>
+  <div class="layout">
+    <div class="main">
+      <div class="players">
+        <span class="chip you">你 <b>X</b> · 先手</span>
+        <span class="chip ai">電腦 <b>O</b></span>
+      </div>
+      <div class="board" id="board">
+        <button class="cell" type="button" data-i="0"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="1"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="2"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="3"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="4"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="5"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="6"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="7"><span class="mark"></span><span class="badge"></span></button>
+        <button class="cell" type="button" data-i="8"><span class="mark"></span><span class="badge"></span></button>
+      </div>
+      <div class="status">
+        <div class="turn" id="turn"></div>
+        <div class="hint" id="hint"></div>
+      </div>
+      <div class="footer">
+        <span id="moves">已下 0 手</span>
+        <button id="reset" type="button">重新開始</button>
+      </div>
+    </div>
+    <div class="log-panel">
+      <div class="log-title">落子紀錄 <span id="log-count">0</span></div>
+      <div class="log-body" id="log-body"><div class="log-empty">尚未開始</div></div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // ====== 常數 ======
+  const LINES = [
+    [0,1,2],[3,4,5],[6,7,8],
+    [0,3,6],[1,4,7],[2,5,8],
+    [0,4,8],[2,4,6]
+  ];
+  const LINE_MASKS = LINES.map(([a,b,c]) => (1<<a)|(1<<b)|(1<<c));
+  const POS_NAMES = ['左上','上中','右上','左中','中心','右中','左下','下中','右下'];
+  const MAX_PER_PLAYER = 3;
+  const N_HIST = 8740;
+
+  // ====== 編碼工具 ======
+  // 歷史用整數編碼：2 bits 長度 + 最多 3 個 4-bit 位置
+  function encHist(h) {
+    let v = h.length;
+    for (let i = 0; i < h.length; i++) v |= h[i] << (2 + i * 4);
+    return v;
+  }
+  function histMask(h) {
+    const v = encHist(h);
+    const len = v & 3;
+    let m = 0;
+    for (let i = 0; i < len; i++) m |= 1 << ((v >> (2 + i * 4)) & 15);
+    return m;
+  }
+  function hasLineArr(arr) {
+    if (arr.length < 3) return false;
+    let m = 0;
+    for (const p of arr) m |= 1 << p;
+    for (let i = 0; i < 8; i++) if ((m & LINE_MASKS[i]) === LINE_MASKS[i]) return true;
+    return false;
+  }
+  function keyOf(xhV, ohV, t) {
+    return (xhV * N_HIST + ohV) * 2 + t;
+  }
+
+  // ====== 遊戲樹搜尋（迭代式 DFS，帶循環偵測） ======
+  const memo = new Map();     // key -> -1 / 0 / 1
+  const onStack = new Set();  // 當前 DFS 路徑上的 key
+
+  function makeFrame(xh, oh, t) {
+    const key = keyOf(encHist(xh), encHist(oh), t);
+    const myArr = t === 0 ? xh : oh;
+    const occupied = histMask(xh) | histMask(oh);
+    const len = myArr.length;
+    const children = [];
+
+    for (let cell = 0; cell < 9; cell++) {
+      if (occupied & (1 << cell)) continue;
+      const newMy = len >= 3
+        ? [myArr[1], myArr[2], cell]
+        : myArr.concat(cell);
+
+      if (hasLineArr(newMy)) {
+        children.push({ win: true });
+        continue;
+      }
+      const nxh = t === 0 ? newMy : xh;
+      const noh = t === 0 ? oh : newMy;
+      const nT = 1 - t;
+      children.push({
+        win: false, nxh, noh, nT,
+        key: keyOf(encHist(nxh), encHist(noh), nT)
+      });
+    }
+    return { xh, oh, t, key, children, idx: 0, best: -2 };
+  }
+
+  function analyze(xh, oh, t) {
+    const rootKey = keyOf(encHist(xh), encHist(oh), t);
+    const cached = memo.get(rootKey);
+    if (cached !== undefined) return cached;
+
+    const stack = [makeFrame(xh, oh, t)];
+    onStack.add(rootKey);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+
+      if (frame.best === 1) {          // 必勝，不必再算
+        memo.set(frame.key, 1);
+        onStack.delete(frame.key);
+        stack.pop();
+        continue;
+      }
+      if (frame.idx >= frame.children.length) {
+        memo.set(frame.key, frame.best);
+        onStack.delete(frame.key);
+        stack.pop();
+        continue;
+      }
+
+      const child = frame.children[frame.idx++];
+      if (child.win) { frame.best = 1; continue; }
+
+      const cv = memo.get(child.key);
+      if (cv !== undefined) {
+        const s = -cv;
+        if (s > frame.best) frame.best = s;
+        continue;
+      }
+      if (onStack.has(child.key)) {    // 循環 → 和局
+        if (0 > frame.best) frame.best = 0;
+        continue;
+      }
+      stack.push(makeFrame(child.nxh, child.noh, child.nT));
+      onStack.add(child.key);
+    }
+    return memo.get(rootKey);
+  }
+
+  // 找當前玩家最佳落子
+  function bestMove(xh, oh, t) {
+    const occupied = histMask(xh) | histMask(oh);
+    const myArr = t === 0 ? xh : oh;
+    const len = myArr.length;
+
+    let bestScore = -2;
+    let bestCells = [];
+
+    for (let cell = 0; cell < 9; cell++) {
+      if (occupied & (1 << cell)) continue;
+      const newMy = len >= 3
+        ? [myArr[1], myArr[2], cell]
+        : myArr.concat(cell);
+
+      let score;
+      if (hasLineArr(newMy)) {
+        score = 1;
+      } else {
+        const nxh = t === 0 ? newMy : xh;
+        const noh = t === 0 ? oh : newMy;
+        score = -analyze(nxh, noh, 1 - t);
+      }
+
+      if (score > bestScore) { bestScore = score; bestCells = [cell]; }
+      else if (score === bestScore) bestCells.push(cell);
+    }
+
+    return {
+      cell: bestCells[Math.floor(Math.random() * bestCells.length)],
+      score: bestScore
+    };
+  }
+
+  // 開頁就背景預熱，玩家讀規則時 AI 已在算
+  setTimeout(() => { analyze([], [], 0); }, 0);
+
+  // ====== UI ======
+  const boardEl    = document.getElementById('board');
+  const turnEl     = document.getElementById('turn');
+  const hintEl     = document.getElementById('hint');
+  const movesEl    = document.getElementById('moves');
+  const resetBtn   = document.getElementById('reset');
+  const logBodyEl  = document.getElementById('log-body');
+  const logCountEl = document.getElementById('log-count');
+  const cellEls    = [...boardEl.querySelectorAll('.cell')];
+
+  let xHist, oHist, turn, moveCount, gameOver, winner, winLine, thinking;
+
+  function reset() {
+    xHist = []; oHist = [];
+    turn = 0;                 // 0 = X, 1 = O
+    moveCount = 0; gameOver = false;
+    winner = null; winLine = null; thinking = false;
+
+    cellEls.forEach(el => {
+      el.className = 'cell';
+      el.querySelector('.mark').textContent = '';
+      el.querySelector('.badge').textContent = '';
+    });
+    logBodyEl.innerHTML = '<div class="log-empty">尚未開始</div>';
+    logCountEl.textContent = '0';
+    updateUI();
+  }
+
+  function getOwner(cell) {
+    const xi = xHist.indexOf(cell);
+    if (xi !== -1) return { player: 'X', age: xi + 1 };
+    const oi = oHist.indexOf(cell);
+    if (oi !== -1) return { player: 'O', age: oi + 1 };
+    return null;
+  }
+  function findWinLine(arr) {
+    const s = new Set(arr);
+    for (const [a,b,c] of LINES) if (s.has(a) && s.has(b) && s.has(c)) return [a,b,c];
+    return null;
+  }
+  function addLog(player, cell, no) {
+    const empty = logBodyEl.querySelector('.log-empty');
+    if (empty) empty.remove();
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    row.innerHTML =
+      `<span class="log-num">${no}.</span>` +
+      `<span class="log-player ${player.toLowerCase()}">${player}</span>` +
+      `<span class="log-arrow">→</span>` +
+      `<span class="log-pos">${POS_NAMES[cell]}</span>`;
+    logBodyEl.appendChild(row);
+    logBodyEl.scrollTop = logBodyEl.scrollHeight;
+    logCountEl.textContent = String(no);
+  }
+
+  function updateUI() {
+    cellEls.forEach(el => el.classList.remove('oldest', 'winning'));
+    for (let i = 0; i < 9; i++) {
+      const el = cellEls[i];
+      const d = getOwner(i);
+      el.classList.remove('x', 'o');
+      const mark = el.querySelector('.mark');
+      const badge = el.querySelector('.badge');
+      if (d) {
+        el.classList.add(d.player.toLowerCase());
+        mark.textContent = d.player;
+        badge.textContent = d.age;
+      } else { mark.textContent = ''; badge.textContent = ''; }
+    }
+    if (winLine) for (const i of winLine) cellEls[i].classList.add('winning');
+    if (!gameOver) {
+      if (xHist.length >= 3) cellEls[xHist[0]].classList.add('oldest');
+      if (oHist.length >= 3) cellEls[oHist[0]].classList.add('oldest');
+    }
+
+    if (winner) {
+      const name = winner === 'X' ? '你' : '電腦';
+      turnEl.innerHTML = `<span class="${winner.toLowerCase()}">${name}</span> 獲勝！`;
+      hintEl.textContent = '按「重新開始」再玩一局';
+    } else if (gameOver) {
+      turnEl.textContent = '和局';
+      hintEl.textContent = '按「重新開始」再玩一局';
+    } else if (thinking) {
+      turnEl.innerHTML = `<span class="o">電腦</span> 思考中<span class="dots"></span>`;
+      hintEl.textContent = '';
+    } else {
+      turnEl.innerHTML = `輪到 <span class="x">你</span> 落子`;
+      if (xHist.length >= 3) hintEl.textContent = '⚠ 你落下後，自己最舊的棋子會消失';
+      else hintEl.textContent = `棋盤上你還可以再放 ${3 - xHist.length} 顆棋子`;
+    }
+
+    movesEl.textContent = `已下 ${moveCount} 手`;
+    boardEl.classList.toggle('locked', thinking || gameOver);
+  }
+
+  function applyMove(player, cell) {
+    moveCount++;
+    const hist = player === 'X' ? xHist : oHist;
+    hist.push(cell);
+    if (hist.length > 3) hist.shift();
+    addLog(player, cell, moveCount);
+  }
+  function endIfWin(player) {
+    const arr = player === 'X' ? xHist : oHist;
+    if (hasLineArr(arr)) {
+      winner = player;
+      winLine = findWinLine(arr);
+      gameOver = true;
+      return true;
+    }
+    return false;
+  }
+
+  function humanPlay(cell) {
+    if (gameOver || thinking) return;
+    if (turn !== 0) return;
+    if (getOwner(cell)) return;
+
+    applyMove('X', cell);
+    cellEls[cell].classList.add('placing');
+    setTimeout(() => cellEls[cell].classList.remove('placing'), 300);
+
+    if (endIfWin('X')) { updateUI(); return; }
+
+    turn = 1; thinking = true;
+    updateUI();
+
+    setTimeout(() => {
+      if (gameOver) { thinking = false; return; }
+      const { cell: move } = bestMove(xHist, oHist, 1);
+      applyMove('O', move);
+      cellEls[move].classList.add('placing');
+      setTimeout(() => cellEls[move].classList.remove('placing'), 300);
+
+      endIfWin('O');
+      thinking = false;
+      turn = 0;
+      if (!gameOver && moveCount >= 300) gameOver = true;
+      updateUI();
+    }, 200);
+  }
+
+  cellEls.forEach(el => {
+    el.addEventListener('click', () => humanPlay(Number(el.dataset.i)));
+  });
+  resetBtn.addEventListener('click', reset);
+
+  reset();
+})();
+</script>
+</body>
+</html>
