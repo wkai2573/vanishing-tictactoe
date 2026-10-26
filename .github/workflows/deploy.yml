@@ -33,7 +33,7 @@ jobs:
         run: |
           rm -rf "hub/apps/${APP_NAME}"
           mkdir -p "hub/apps/${APP_NAME}"
-          cp index.html "hub/apps/${APP_NAME}/"
+          cp index.html thumb.jpg "hub/apps/${APP_NAME}/"
 
       - name: Commit & push to hub
         working-directory: hub
