@@ -38,7 +38,18 @@
   .chip {
     font-size: 12.5px; padding: 5px 12px; border-radius: 999px;
     border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.03);
-    color: #9aa4bc;
+    color: #9aa4bc; cursor: pointer; user-select: none; transition: all .15s;
+    font-family: inherit;
+  }
+  .chip:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.25); }
+  .chip.active {
+    border-color: rgba(56,189,248,.6);
+    background: rgba(56,189,248,.12);
+    color: #e8ecf5;
+  }
+  .chip.active.ai-active {
+    border-color: rgba(251,146,60,.6);
+    background: rgba(251,146,60,.12);
   }
   .chip b { font-weight: 800; }
   .chip.you b { color: #38bdf8; }
@@ -142,8 +153,8 @@
   <div class="layout">
     <div class="main">
       <div class="players">
-        <span class="chip you">你 <b>X</b> · 先手</span>
-        <span class="chip ai">電腦 <b>O</b></span>
+        <button class="chip you active" id="chip-human-first" type="button" title="點擊設定由你先手">你 <b>X</b> · 先手</button>
+        <button class="chip ai" id="chip-ai-first" type="button" title="點擊設定由電腦先手">電腦 <b>O</b></button>
       </div>
       <div class="board" id="board">
         <button class="cell" type="button" data-i="0"><span class="mark"></span><span class="badge"></span></button>
@@ -187,153 +198,261 @@
   const N_HIST = 8740;
 
   // ====== 編碼工具 ======
-  // 歷史用整數編碼：2 bits 長度 + 最多 3 個 4-bit 位置
   function encHist(h) {
     let v = h.length;
     for (let i = 0; i < h.length; i++) v |= h[i] << (2 + i * 4);
     return v;
   }
-  function histMask(h) {
-    const v = encHist(h);
+  function histMaskVal(v) {
     const len = v & 3;
     let m = 0;
     for (let i = 0; i < len; i++) m |= 1 << ((v >> (2 + i * 4)) & 15);
     return m;
   }
+  function histMask(h) {
+    return histMaskVal(encHist(h));
+  }
+  function hasLine(m) {
+    for (let i = 0; i < 8; i++) if ((m & LINE_MASKS[i]) === LINE_MASKS[i]) return true;
+    return false;
+  }
   function hasLineArr(arr) {
     if (arr.length < 3) return false;
     let m = 0;
     for (const p of arr) m |= 1 << p;
-    for (let i = 0; i < 8; i++) if ((m & LINE_MASKS[i]) === LINE_MASKS[i]) return true;
-    return false;
+    return hasLine(m);
   }
   function keyOf(xhV, ohV, t) {
     return (xhV * N_HIST + ohV) * 2 + t;
   }
 
-  // ====== 遊戲樹搜尋（迭代式 DFS，帶循環偵測） ======
-  const memo = new Map();     // key -> -1 / 0 / 1
-  const onStack = new Set();  // 當前 DFS 路徑上的 key
+  // ====== 逆向分析求解引擎 (Retrograde Analysis) ======
+  // 窮舉計算全部 116,074 個盤面狀態的勝負與極限步數
+  const keyToId = new Map();
+  const states = [];
+  let status, dist;
+  let solverReady = false;
 
-  function makeFrame(xh, oh, t) {
-    const key = keyOf(encHist(xh), encHist(oh), t);
-    const myArr = t === 0 ? xh : oh;
-    const occupied = histMask(xh) | histMask(oh);
-    const len = myArr.length;
-    const children = [];
+  function initSolver() {
+    if (solverReady) return;
+    const rootKey = keyOf(0, 0, 0);
+    keyToId.set(rootKey, 0);
+    states.push({ xhV: 0, ohV: 0, t: 0, moves: [] });
 
-    for (let cell = 0; cell < 9; cell++) {
-      if (occupied & (1 << cell)) continue;
-      const newMy = len >= 3
-        ? [myArr[1], myArr[2], cell]
-        : myArr.concat(cell);
+    let qHead = 0;
+    while (qHead < states.length) {
+      const cur = states[qHead++];
+      const myV = cur.t === 0 ? cur.xhV : cur.ohV;
+      const myLen = myV & 3;
+      const occ = histMaskVal(cur.xhV) | histMaskVal(cur.ohV);
+      const p0 = (myV >> 2) & 15;
+      const p1 = (myV >> 6) & 15;
+      const p2 = (myV >> 10) & 15;
 
-      if (hasLineArr(newMy)) {
-        children.push({ win: true });
-        continue;
+      for (let cell = 0; cell < 9; cell++) {
+        if (occ & (1 << cell)) continue;
+        let newMyV, newMask;
+        if (myLen === 0) {
+          newMyV = 1 | (cell << 2);
+          newMask = 1 << cell;
+        } else if (myLen === 1) {
+          newMyV = 2 | (p0 << 2) | (cell << 6);
+          newMask = (1 << p0) | (1 << cell);
+        } else if (myLen === 2) {
+          newMyV = 3 | (p0 << 2) | (p1 << 6) | (cell << 10);
+          newMask = (1 << p0) | (1 << p1) | (1 << cell);
+        } else {
+          newMyV = 3 | (p1 << 2) | (p2 << 6) | (cell << 10);
+          newMask = (1 << p1) | (1 << p2) | (1 << cell);
+        }
+
+        if (hasLine(newMask)) {
+          cur.moves.push({ cell, win: true });
+          continue;
+        }
+
+        const nxhV = cur.t === 0 ? newMyV : cur.xhV;
+        const nohV = cur.t === 0 ? cur.ohV : newMyV;
+        const nT = 1 - cur.t;
+        const nKey = keyOf(nxhV, nohV, nT);
+
+        let nextId = keyToId.get(nKey);
+        if (nextId === undefined) {
+          nextId = states.length;
+          keyToId.set(nKey, nextId);
+          states.push({ xhV: nxhV, ohV: nohV, t: nT, moves: [] });
+        }
+        cur.moves.push({ cell, win: false, nextId });
       }
-      const nxh = t === 0 ? newMy : xh;
-      const noh = t === 0 ? oh : newMy;
-      const nT = 1 - t;
-      children.push({
-        win: false, nxh, noh, nT,
-        key: keyOf(encHist(nxh), encHist(noh), nT)
-      });
     }
-    return { xh, oh, t, key, children, idx: 0, best: -2 };
-  }
 
-  function analyze(xh, oh, t) {
-    const rootKey = keyOf(encHist(xh), encHist(oh), t);
-    const cached = memo.get(rootKey);
-    if (cached !== undefined) return cached;
-
-    const stack = [makeFrame(xh, oh, t)];
-    onStack.add(rootKey);
-
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1];
-
-      if (frame.best === 1) {          // 必勝，不必再算
-        memo.set(frame.key, 1);
-        onStack.delete(frame.key);
-        stack.pop();
-        continue;
+    const N = states.length;
+    const parentCount = new Int32Array(N);
+    for (let i = 0; i < N; i++) {
+      for (const m of states[i].moves) {
+        if (!m.win) parentCount[m.nextId]++;
       }
-      if (frame.idx >= frame.children.length) {
-        memo.set(frame.key, frame.best);
-        onStack.delete(frame.key);
-        stack.pop();
-        continue;
-      }
-
-      const child = frame.children[frame.idx++];
-      if (child.win) { frame.best = 1; continue; }
-
-      const cv = memo.get(child.key);
-      if (cv !== undefined) {
-        const s = -cv;
-        if (s > frame.best) frame.best = s;
-        continue;
-      }
-      if (onStack.has(child.key)) {    // 循環 → 和局
-        if (0 > frame.best) frame.best = 0;
-        continue;
-      }
-      stack.push(makeFrame(child.nxh, child.noh, child.nT));
-      onStack.add(child.key);
     }
-    return memo.get(rootKey);
-  }
 
-  // 找當前玩家最佳落子
-  function bestMove(xh, oh, t) {
-    const occupied = histMask(xh) | histMask(oh);
-    const myArr = t === 0 ? xh : oh;
-    const len = myArr.length;
+    const parentOffsets = new Int32Array(N + 1);
+    for (let i = 0; i < N; i++) parentOffsets[i + 1] = parentOffsets[i] + parentCount[i];
+    const parentArr = new Int32Array(parentOffsets[N]);
+    const curParentIdx = new Int32Array(parentOffsets);
 
-    let bestScore = -2;
-    let bestCells = [];
+    for (let i = 0; i < N; i++) {
+      for (const m of states[i].moves) {
+        if (!m.win) parentArr[curParentIdx[m.nextId]++] = i;
+      }
+    }
 
-    for (let cell = 0; cell < 9; cell++) {
-      if (occupied & (1 << cell)) continue;
-      const newMy = len >= 3
-        ? [myArr[1], myArr[2], cell]
-        : myArr.concat(cell);
+    status = new Int8Array(N);
+    dist = new Int16Array(N);
+    const remMoves = new Int8Array(N);
+    const propQ = new Int32Array(N);
+    let pTail = 0;
 
-      let score;
-      if (hasLineArr(newMy)) {
-        score = 1;
+    for (let i = 0; i < N; i++) {
+      const mvs = states[i].moves;
+      let hasW = false;
+      for (const m of mvs) {
+        if (m.win) { hasW = true; break; }
+      }
+      if (hasW) {
+        status[i] = 1;
+        dist[i] = 1;
+        propQ[pTail++] = i;
       } else {
-        const nxh = t === 0 ? newMy : xh;
-        const noh = t === 0 ? oh : newMy;
-        score = -analyze(nxh, noh, 1 - t);
+        remMoves[i] = mvs.length;
       }
-
-      if (score > bestScore) { bestScore = score; bestCells = [cell]; }
-      else if (score === bestScore) bestCells.push(cell);
     }
 
-    return {
-      cell: bestCells[Math.floor(Math.random() * bestCells.length)],
-      score: bestScore
-    };
+    let pHead = 0;
+    while (pHead < pTail) {
+      const u = propQ[pHead++];
+      const s = status[u];
+      const d = dist[u];
+      const pStart = parentOffsets[u];
+      const pEnd = parentOffsets[u + 1];
+
+      if (s === -1) {
+        for (let p = pStart; p < pEnd; p++) {
+          const v = parentArr[p];
+          if (status[v] === 0) {
+            status[v] = 1;
+            dist[v] = d + 1;
+            propQ[pTail++] = v;
+          } else if (status[v] === 1 && d + 1 < dist[v]) {
+            dist[v] = d + 1;
+          }
+        }
+      } else if (s === 1) {
+        for (let p = pStart; p < pEnd; p++) {
+          const v = parentArr[p];
+          if (status[v] === 0) {
+            remMoves[v]--;
+            if (d + 1 > dist[v]) dist[v] = d + 1;
+            if (remMoves[v] === 0) {
+              status[v] = -1;
+              propQ[pTail++] = v;
+            }
+          }
+        }
+      }
+    }
+    solverReady = true;
   }
 
-  // 開頁就背景預熱，玩家讀規則時 AI 已在算
-  setTimeout(() => { analyze([], [], 0); }, 0);
+  // 找當前玩家最佳落子（極限頑抗 + 必勝最速反殺）
+  function bestMove(xh, oh, t) {
+    if (!solverReady) initSolver();
+    const key = keyOf(encHist(xh), encHist(oh), t);
+    const id = keyToId.get(key);
+    if (id === undefined) {
+      const occ = histMask(xh) | histMask(oh);
+      const legal = [];
+      for (let c = 0; c < 9; c++) if (!(occ & (1 << c))) legal.push(c);
+      return { cell: legal[Math.floor(Math.random() * legal.length)] };
+    }
+    const cur = states[id];
+
+    // 1. 立即獲勝手
+    const winMoves = cur.moves.filter(m => m.win);
+    if (winMoves.length > 0) {
+      return { cell: winMoves[Math.floor(Math.random() * winMoves.length)].cell };
+    }
+
+    // 2. 必勝走法（對手為 -1，選擇最速獲勝 min distance）
+    const winningMoves = [];
+    let minD = Infinity;
+    for (const m of cur.moves) {
+      if (status[m.nextId] === -1) {
+        const d = dist[m.nextId];
+        if (d < minD) {
+          minD = d;
+          winningMoves.length = 0;
+          winningMoves.push(m.cell);
+        } else if (d === minD) {
+          winningMoves.push(m.cell);
+        }
+      }
+    }
+    if (winningMoves.length > 0) {
+      return { cell: winningMoves[Math.floor(Math.random() * winningMoves.length)] };
+    }
+
+    // 3. 和局走法（對手為 0，保持不敗）
+    const drawMoves = cur.moves.filter(m => status[m.nextId] === 0).map(m => m.cell);
+    if (drawMoves.length > 0) {
+      return { cell: drawMoves[Math.floor(Math.random() * drawMoves.length)] };
+    }
+
+    // 4. 處於劣勢時極限頑抗：選擇對手需要最長步數才能獲勝的走法 (max distance)，確保撐滿 13 步才輸
+    let maxD = -1;
+    const losingMoves = [];
+    for (const m of cur.moves) {
+      const d = dist[m.nextId];
+      if (d > maxD) {
+        maxD = d;
+        losingMoves.length = 0;
+        losingMoves.push(m.cell);
+      } else if (d === maxD) {
+        losingMoves.push(m.cell);
+      }
+    }
+    return { cell: losingMoves[Math.floor(Math.random() * losingMoves.length)] };
+  }
+
+  // 背景初始化求解引擎
+  setTimeout(initSolver, 0);
 
   // ====== UI ======
-  const boardEl    = document.getElementById('board');
-  const turnEl     = document.getElementById('turn');
-  const hintEl     = document.getElementById('hint');
-  const movesEl    = document.getElementById('moves');
-  const resetBtn   = document.getElementById('reset');
-  const logBodyEl  = document.getElementById('log-body');
-  const logCountEl = document.getElementById('log-count');
-  const cellEls    = [...boardEl.querySelectorAll('.cell')];
+  const boardEl        = document.getElementById('board');
+  const turnEl         = document.getElementById('turn');
+  const hintEl         = document.getElementById('hint');
+  const movesEl        = document.getElementById('moves');
+  const resetBtn       = document.getElementById('reset');
+  const logBodyEl      = document.getElementById('log-body');
+  const logCountEl     = document.getElementById('log-count');
+  const chipHumanFirst = document.getElementById('chip-human-first');
+  const chipAiFirst    = document.getElementById('chip-ai-first');
+  const cellEls        = [...boardEl.querySelectorAll('.cell')];
 
   let xHist, oHist, turn, moveCount, gameOver, winner, winLine, thinking;
+  let humanPlayer = 'X'; // 'X' = 玩家先手, 'O' = 電腦先手
+
+  function updatePlayerChips() {
+    if (humanPlayer === 'X') {
+      chipHumanFirst.className = 'chip you active';
+      chipHumanFirst.innerHTML = '你 <b>X</b> · 先手';
+      chipAiFirst.className = 'chip ai';
+      chipAiFirst.innerHTML = '電腦 <b>O</b>';
+    } else {
+      chipHumanFirst.className = 'chip you';
+      chipHumanFirst.innerHTML = '你 <b>O</b>';
+      chipAiFirst.className = 'chip ai active ai-active';
+      chipAiFirst.innerHTML = '電腦 <b>X</b> · 先手';
+    }
+  }
 
   function reset() {
     xHist = []; oHist = [];
@@ -348,7 +467,13 @@
     });
     logBodyEl.innerHTML = '<div class="log-empty">尚未開始</div>';
     logCountEl.textContent = '0';
+    updatePlayerChips();
     updateUI();
+
+    // 如果電腦執先手 (X)，開局立即下第一手
+    if (humanPlayer === 'O') {
+      aiPlay();
+    }
   }
 
   function getOwner(cell) {
@@ -399,19 +524,22 @@
     }
 
     if (winner) {
-      const name = winner === 'X' ? '你' : '電腦';
+      const isYou = winner === humanPlayer;
+      const name = isYou ? '你' : '電腦';
       turnEl.innerHTML = `<span class="${winner.toLowerCase()}">${name}</span> 獲勝！`;
       hintEl.textContent = '按「重新開始」再玩一局';
     } else if (gameOver) {
       turnEl.textContent = '和局';
       hintEl.textContent = '按「重新開始」再玩一局';
     } else if (thinking) {
-      turnEl.innerHTML = `<span class="o">電腦</span> 思考中<span class="dots"></span>`;
+      const aiSymbol = humanPlayer === 'X' ? 'o' : 'x';
+      turnEl.innerHTML = `<span class="${aiSymbol}">電腦</span> 思考中<span class="dots"></span>`;
       hintEl.textContent = '';
     } else {
-      turnEl.innerHTML = `輪到 <span class="x">你</span> 落子`;
-      if (xHist.length >= 3) hintEl.textContent = '⚠ 你落下後，自己最舊的棋子會消失';
-      else hintEl.textContent = `棋盤上你還可以再放 ${3 - xHist.length} 顆棋子`;
+      const myHist = humanPlayer === 'X' ? xHist : oHist;
+      turnEl.innerHTML = `輪到 <span class="${humanPlayer.toLowerCase()}">你</span> 落子`;
+      if (myHist.length >= 3) hintEl.textContent = '⚠ 你落下後，自己最舊的棋子會消失';
+      else hintEl.textContent = `棋盤上你還可以再放 ${3 - myHist.length} 顆棋子`;
     }
 
     movesEl.textContent = `已下 ${moveCount} 手`;
@@ -436,39 +564,59 @@
     return false;
   }
 
-  function humanPlay(cell) {
-    if (gameOver || thinking) return;
-    if (turn !== 0) return;
-    if (getOwner(cell)) return;
-
-    applyMove('X', cell);
-    cellEls[cell].classList.add('placing');
-    setTimeout(() => cellEls[cell].classList.remove('placing'), 300);
-
-    if (endIfWin('X')) { updateUI(); return; }
-
-    turn = 1; thinking = true;
+  function aiPlay() {
+    if (gameOver) return;
+    thinking = true;
     updateUI();
 
     setTimeout(() => {
       if (gameOver) { thinking = false; return; }
-      const { cell: move } = bestMove(xHist, oHist, 1);
-      applyMove('O', move);
+      const aiPlayer = humanPlayer === 'X' ? 'O' : 'X';
+      const aiTurn = aiPlayer === 'X' ? 0 : 1;
+      const { cell: move } = bestMove(xHist, oHist, aiTurn);
+      applyMove(aiPlayer, move);
       cellEls[move].classList.add('placing');
       setTimeout(() => cellEls[move].classList.remove('placing'), 300);
 
-      endIfWin('O');
+      endIfWin(aiPlayer);
       thinking = false;
-      turn = 0;
+      turn = 1 - aiTurn;
       if (!gameOver && moveCount >= 300) gameOver = true;
       updateUI();
     }, 200);
+  }
+
+  function humanPlay(cell) {
+    if (gameOver || thinking) return;
+    const humanTurn = humanPlayer === 'X' ? 0 : 1;
+    if (turn !== humanTurn) return;
+    if (getOwner(cell)) return;
+
+    applyMove(humanPlayer, cell);
+    cellEls[cell].classList.add('placing');
+    setTimeout(() => cellEls[cell].classList.remove('placing'), 300);
+
+    if (endIfWin(humanPlayer)) { updateUI(); return; }
+
+    turn = 1 - humanTurn;
+    aiPlay();
   }
 
   cellEls.forEach(el => {
     el.addEventListener('click', () => humanPlay(Number(el.dataset.i)));
   });
   resetBtn.addEventListener('click', reset);
+
+  chipHumanFirst.addEventListener('click', () => {
+    if (humanPlayer === 'X') return;
+    humanPlayer = 'X';
+    reset();
+  });
+  chipAiFirst.addEventListener('click', () => {
+    if (humanPlayer === 'O') return;
+    humanPlayer = 'O';
+    reset();
+  });
 
   reset();
 })();
